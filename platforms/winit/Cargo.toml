@@ -26,6 +26,7 @@ rwh_06 = { package = "raw-window-handle", version = "0.6.2", features = ["std"],
 
 [target.'cfg(target_os = "windows")'.dependencies]
 accesskit_windows = { version = "0.34.0", path = "../windows" }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 accesskit_macos = { version = "0.26.3", path = "../macos" }
