@@ -7,8 +7,6 @@ use accesskit::{
     Action, ActionHandler, ActionRequest, ActivationHandler, Node, NodeId, Role, Tree, TreeId,
     TreeUpdate,
 };
-use windows::{Win32::UI::Accessibility::*, core::*};
-
 use super::*;
 
 const WINDOW_TITLE: &str = "Simple test";
@@ -85,6 +83,63 @@ fn is_button_named(element: &IUIAutomationElement, expected_name: &str) -> bool 
 
 fn is_button_1(element: &IUIAutomationElement) -> bool {
     is_button_named(element, "Button 1")
+}
+
+#[implement(Windows::Win32::UI::Accessibility::IUIAutomationPropertyChangedEventHandler)]
+struct NameChanged(std::sync::mpsc::Sender<()>);
+
+impl IUIAutomationPropertyChangedEventHandler_Impl for NameChanged_Impl {
+    fn HandlePropertyChangedEvent(
+        &self,
+        _sender: Ref<IUIAutomationElement>,
+        property_id: UIA_PROPERTY_ID,
+        _new_value: &Windows::Win32::System::Variant::VARIANT,
+    ) -> Result<()> {
+        if property_id == UIA_NamePropertyId {
+            let _ = self.0.send(());
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn delivers_property_change() -> Result<()> {
+    scope(|s| {
+        let window = unsafe { s.uia.ElementFromHandle(s.window.0) }?;
+        let walker = unsafe { s.uia.ControlViewWalker() }?;
+        let mut button = unsafe { walker.GetFirstChildElement(&window) }?;
+        while !is_button_1(&button) {
+            button = unsafe { walker.GetNextSiblingElement(&button) }?;
+        }
+        let (send, receive) = std::sync::mpsc::channel();
+        let handler: IUIAutomationPropertyChangedEventHandler = NameChanged(send).into();
+        unsafe {
+            s.uia.AddPropertyChangedEventHandlerNativeArray(
+                &window,
+                TreeScope_Subtree,
+                None,
+                &handler,
+                &[UIA_NamePropertyId],
+            )?;
+        }
+        let _subscription = scopeguard::guard((), |_| {
+            let _ = unsafe { s.uia.RemovePropertyChangedEventHandler(&window, &handler) };
+        });
+
+        s.update_tree(TreeUpdate {
+            nodes: vec![
+                (BUTTON_1_ID, make_button("Renamed button")),
+                (BUTTON_2_ID, make_button("Other renamed button")),
+            ],
+            tree: None,
+            tree_id: TreeId::ROOT,
+            focus: BUTTON_1_ID,
+        });
+        receive.recv_timeout(DEFAULT_TIMEOUT).unwrap();
+        receive.recv_timeout(DEFAULT_TIMEOUT).unwrap();
+        assert!(is_button_named(&button, "Renamed button"));
+        Ok(())
+    })
 }
 
 fn is_button_2(element: &IUIAutomationElement) -> bool {

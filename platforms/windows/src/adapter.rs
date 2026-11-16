@@ -10,7 +10,11 @@ use accesskit::{
 use accesskit_consumer::{FilterResult, Node, NodeId, Tree, TreeChangeHandler, TreeState};
 use hashbrown::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
-use std::sync::{Arc, atomic::Ordering};
+use std::io::{self, Write};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use windows::Win32::{
     Foundation::*,
     UI::{Accessibility::*, WindowsAndMessaging::*},
@@ -641,18 +645,26 @@ impl QueuedEvents {
     /// It's not clear whether this is a strict requirement of UIA itself,
     /// but based on the known behavior of UIA, MSAA, and some ATs,
     /// it's strongly recommended.
+    /// If UI Automation rejects a notification, delivery continues with the
+    /// remaining notifications. The first failure of each call is logged.
     pub fn raise(self) {
+        static EVENT_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
+        static PROPERTY_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
+
         for event in self.0 {
-            match event {
-                QueuedEvent::Simple { element, event_id } => {
-                    unsafe { UiaRaiseAutomationEvent(&element, event_id) }.unwrap();
-                }
+            let (result, reported, call, id) = match event {
+                QueuedEvent::Simple { element, event_id } => (
+                    unsafe { UiaRaiseAutomationEvent(&element, event_id) },
+                    &EVENT_FAILURE_REPORTED,
+                    "UiaRaiseAutomationEvent",
+                    event_id.0,
+                ),
                 QueuedEvent::PropertyChanged {
                     element,
                     property_id,
                     old_value,
                     new_value,
-                } => {
+                } => (
                     unsafe {
                         UiaRaiseAutomationPropertyChangedEvent(
                             &element,
@@ -660,8 +672,19 @@ impl QueuedEvents {
                             &old_value,
                             &new_value,
                         )
-                    }
-                    .unwrap();
+                    },
+                    &PROPERTY_FAILURE_REPORTED,
+                    "UiaRaiseAutomationPropertyChangedEvent",
+                    property_id.0,
+                ),
+            };
+            if let Err(error) = result {
+                if !reported.swap(true, Ordering::Relaxed) {
+                    let _ = writeln!(
+                        io::stderr().lock(),
+                        "AccessKit: {call} failed for ID {id}: HRESULT 0x{:08X}",
+                        error.code().0 as u32,
+                    );
                 }
             }
         }

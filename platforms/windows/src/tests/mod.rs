@@ -30,6 +30,7 @@ use super::{
 };
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+const UPDATE_TREE: u32 = WM_APP + 1;
 
 static WINDOW_CLASS_ATOM: Lazy<u16> = Lazy::new(|| {
     let class_name = w!("AccessKitTest");
@@ -93,6 +94,16 @@ extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam: L
         }
         WM_PAINT => {
             unsafe { ValidateRect(Some(window), None) }.unwrap();
+            LRESULT(0)
+        }
+        UPDATE_TREE => {
+            // The synchronous sender owns this request until the message returns.
+            let update = unsafe { &mut *(lparam.0 as *mut Option<accesskit::TreeUpdate>) };
+            let state = unsafe { &*get_window_state(window) };
+            let events = state.adapter.borrow_mut().update_if_active(|| update.take().unwrap());
+            if let Some(events) = events {
+                events.raise();
+            }
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -174,6 +185,13 @@ pub(crate) struct Scope {
 }
 
 impl Scope {
+    pub(crate) fn update_tree(&self, update: accesskit::TreeUpdate) {
+        let mut update = Some(update);
+        let request = &mut update as *mut _ as isize;
+        unsafe { SendMessageW(self.window.0, UPDATE_TREE, None, Some(LPARAM(request))) };
+        assert!(update.is_none());
+    }
+
     pub(crate) fn show_and_focus_window(&self) {
         let _ = unsafe { ShowWindow(self.window.0, SW_SHOW) };
         let _ = unsafe { SetForegroundWindow(self.window.0) };
